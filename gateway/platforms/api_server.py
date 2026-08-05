@@ -3511,6 +3511,30 @@ class APIServerAdapter(BasePlatformAdapter):
         fork = await asyncio.to_thread(db.get_session, fork_id) or {"id": fork_id, "parent_session_id": source_id}
         return web.json_response({"object": "hermes.session", "session": self._session_response(fork)}, status=201)
 
+    def _build_api_footer_line(self, result: Any) -> str:
+        """Build the runtime-metadata footer for API-server responses.
+
+        Mirrors ``gateway/run.py`` so desktop-app / API-server surfaces show
+        the same footer as messaging platforms.  Returns ``""`` when the
+        footer is disabled in config or the turn produced no data.
+        """
+        if not isinstance(result, dict) or not result.get("final_response"):
+            return ""
+        try:
+            from gateway.run import _load_gateway_config
+            from gateway.runtime_footer import build_footer_line as _bfl
+            return _bfl(
+                user_config=_load_gateway_config(),
+                platform_key="api_server",
+                model=result.get("model"),
+                context_tokens=result.get("last_prompt_tokens", 0) or 0,
+                context_length=result.get("context_length") or None,
+                cwd=os.environ.get("TERMINAL_CWD", ""),
+            )
+        except Exception as _footer_err:
+            logger.debug("runtime_footer build failed: %s", _footer_err)
+            return ""
+
     @_admit_api_agent_request
     async def _handle_session_chat(self, request: "web.Request") -> "web.Response":
         """POST /api/sessions/{session_id}/chat — one synchronous agent turn."""
@@ -3597,6 +3621,11 @@ class APIServerAdapter(BasePlatformAdapter):
         )
         effective_session_id = result.get("session_id") if isinstance(result, dict) else session_id
         final_response = _resolve_media_to_data_urls(result.get("final_response", "") if isinstance(result, dict) else "")
+        # Runtime-metadata footer — mirror gateway/run.py so the API-server
+        # (desktop app) surface shows the same footer as messaging platforms.
+        _footer_line = self._build_api_footer_line(result)
+        if _footer_line and final_response:
+            final_response = f"{final_response}\n\n{_footer_line}"
         headers = {"X-Hermes-Session-Id": effective_session_id or session_id}
         if gateway_session_key:
             headers["X-Hermes-Session-Key"] = gateway_session_key
@@ -3761,6 +3790,12 @@ class APIServerAdapter(BasePlatformAdapter):
                     **agent_overrides,
                 )
                 final_response = _resolve_media_to_data_urls(result.get("final_response", "") if isinstance(result, dict) else "")
+                # Runtime-metadata footer — mirror gateway/run.py so the
+                # API-server (desktop app) SSE surface shows the same footer
+                # as messaging platforms.
+                _footer_line = self._build_api_footer_line(result)
+                if _footer_line and final_response:
+                    final_response = f"{final_response}\n\n{_footer_line}"
                 effective_session_id = result.get("session_id", session_id) if isinstance(result, dict) else session_id
                 turn_messages = self._turn_transcript_messages(history, user_message, result) if isinstance(result, dict) else []
                 effective_runtime = {}
@@ -6134,6 +6169,20 @@ class APIServerAdapter(BasePlatformAdapter):
                         if isinstance(result, dict):
                             result["runtime"] = runtime
                         usage["runtime"] = runtime
+                    # Runtime-metadata footer support: surface model + context
+                    # length so callers (session chat / SSE) can build the
+                    # footer line without re-resolving the agent.
+                    if isinstance(result, dict):
+                        result["model"] = getattr(agent, "model", None)
+                        _ctx_len = getattr(
+                            getattr(agent, "context_compressor", None),
+                            "context_length",
+                            0,
+                        ) or 0
+                        result["context_length"] = _ctx_len or None
+                        result["last_prompt_tokens"] = (
+                            usage.get("input_tokens", 0) or 0
+                        )
                     return result, usage
                 except _ProviderAuthResolutionError as exc:
                     # Only _ProviderAuthResolutionError — raised exclusively
