@@ -1,35 +1,33 @@
 """Gateway runtime-metadata footer.
 
-Renders a compact footer showing runtime state (model, context %, cwd) and
-appends it to the FINAL message of an agent turn when enabled.  Off by default
-to keep replies minimal.
+Renders a compact footer showing runtime state.
+appends it to the FINAL message of an agent turn when enabled.
 
-Config (``~/.hermes/config.yaml``)::
+Config (~/.hermes/config.yaml)::
 
     display:
       runtime_footer:
-        enabled: true                       # off by default
-        fields: [model, context_pct, cwd]   # order shown; drop any to hide
-
-Available fields:
-    model        — bare model id, vendor prefix dropped (``gpt-5.4``)
-    context_pct  — last-call context occupancy as a percent (``5%``)
-    latency      — wall-clock duration of the turn (``22s``, ``1m05s``)
-    cwd          — home-relative working dir (``~``)
-
-``latency`` is opt-in: it is NOT in the default field set, so a footer whose
-``fields`` are unset renders exactly as before.
+        enabled: true
+        fields: [status, response_time, model, io_tokens, context_pct]
 
 Per-platform overrides live under ``display.platforms.<platform>.runtime_footer``.
-Users can toggle the global setting with ``/footer on|off`` from both the CLI
-and any gateway platform.
 
-The footer is appended to the final response text in ``gateway/run.py`` right
-before returning the response to the adapter send path — so it only lands on
-the final message a user sees, not on tool-progress updates or streaming
-partials.  When streaming is on and the final text has already been delivered
-piecemeal, the footer is sent as a separate trailing message via
-``send_trailing_footer()``.
+Available fields:
+    status        — 已完成
+    response_time — 耗时 44.9s
+    model         — bare model id, vendor prefix dropped
+    io_tokens     — ↑ out / ↓ in
+    cache_io      — 缓存 read/write
+    context_pct   — 上下文 used/max (pct%)
+    latency       — wall-clock duration (22s, 1m05s)
+    cwd           — home-relative working dir
+    context       — used/max tokens (no percent)
+
+This is a merged build: it keeps the upstream v0.20.0 signature
+(``cwd`` / ``turn_seconds``) for gateway/run.py callers AND the enhanced
+fields (``status`` / ``response_time`` / ``io_tokens`` / ``context_pct``)
+used by the local Feishu card footer, so all surfaces render the same rich
+footer line.
 """
 
 from __future__ import annotations
@@ -37,14 +35,40 @@ from __future__ import annotations
 import os
 from typing import Any, Iterable, Optional
 
-_DEFAULT_FIELDS: tuple[str, ...] = ("model", "context_pct", "cwd")
+_DEFAULT_FIELDS: tuple[str, ...] = ("status", "response_time", "model", "io_tokens", "cache_io", "context_pct")
 _SEP = " · "
 
 
-def _home_relative_cwd(cwd: str) -> str:
-    """Return *cwd* with ``$HOME`` collapsed to ``~``.  Empty string if unset."""
-    if not cwd:
+def _model_short(model: Optional[str]) -> str:
+    """Drop ``vendor/`` prefix for readability."""
+    if not model:
         return ""
+    return model.rsplit("/", 1)[-1]
+
+
+def _fmt_k(v: float) -> str:
+    """Format a number as k-suffixed string (e.g. 48800 → 48.8k)."""
+    if v is None:
+        return "?"
+    if v >= 1_000_000:
+        return f"{v / 1_000_000:.1f}m"
+    if v >= 1_000:
+        return f"{v / 1_000:.1f}k"
+    return str(int(v))
+
+
+def _format_latency(seconds: float) -> str:
+    """Wall-clock duration as ``22s`` / ``1m05s``."""
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds}s"
+    return f"{seconds // 60}m{seconds % 60:02d}s"
+
+
+def _home_relative_cwd(cwd: str) -> str:
+    """Collapse the user's home prefix to ``~``; empty input → ``~``."""
+    if not cwd:
+        return "~"
     try:
         home = os.path.expanduser("~")
         p = os.path.abspath(cwd)
@@ -53,13 +77,6 @@ def _home_relative_cwd(cwd: str) -> str:
         return p
     except Exception:
         return cwd
-
-
-def _model_short(model: Optional[str]) -> str:
-    """Drop ``vendor/`` prefix for readability (``openai/gpt-5.4`` → ``gpt-5.4``)."""
-    if not model:
-        return ""
-    return model.rsplit("/", 1)[-1]
 
 
 def resolve_footer_config(
@@ -97,41 +114,64 @@ def resolve_footer_config(
     return resolved
 
 
-def _format_latency(seconds: float) -> str:
-    """Humanize a turn duration: ``<1s``, ``22s``, ``1m05s``."""
-    if seconds < 1:
-        return "<1s"
-    total = int(round(seconds))
-    if total < 60:
-        return f"{total}s"
-    m, sec = divmod(total, 60)
-    return f"{m}m{sec:02d}s"
-
-
 def format_runtime_footer(
     *,
     model: Optional[str],
     context_tokens: int,
     context_length: Optional[int],
+    response_time: Optional[float] = None,
+    output_tokens: Optional[int] = None,
+    input_tokens: Optional[int] = None,
+    cache_read_tokens: Optional[int] = None,
+    cache_write_tokens: Optional[int] = None,
     cwd: Optional[str] = None,
     turn_seconds: Optional[float] = None,
     fields: Iterable[str] = _DEFAULT_FIELDS,
 ) -> str:
     """Render the footer line, or return "" if no fields have data.
 
-    Fields are skipped silently when their underlying data is missing — a
-    partially-populated footer is better than a line with ``?%`` or empty slots.
+    Fields are skipped silently when their underlying data is missing.
     """
     parts: list[str] = []
     for field in fields:
-        if field == "model":
+        if field == "status":
+            parts.append("已完成")
+        elif field == "response_time":
+            if response_time is not None:
+                parts.append(f"耗时 {response_time:.1f}s")
+        elif field == "model":
             m = _model_short(model)
             if m:
                 parts.append(m)
+        elif field == "io_tokens":
+            out_k = _fmt_k(output_tokens) if output_tokens else None
+            in_k = _fmt_k(input_tokens) if input_tokens else None
+            if out_k and out_k != "?":
+                parts.append(f"↑ {out_k}")
+            if in_k and in_k != "?":
+                parts.append(f"↓ {in_k}")
+        elif field == "cache_io":
+            cr_k = _fmt_k(cache_read_tokens) if cache_read_tokens else None
+            cw_k = _fmt_k(cache_write_tokens) if cache_write_tokens else None
+            cache_parts = []
+            if cr_k and cr_k != "?":
+                cache_parts.append(cr_k)
+            if cw_k and cw_k != "?":
+                cache_parts.append(cw_k)
+            if cache_parts:
+                cache_str = "/".join(cache_parts)
+                parts.append(f"缓存 {cache_str}")
         elif field == "context_pct":
             if context_length and context_length > 0 and context_tokens >= 0:
+                ctx_k = _fmt_k(context_tokens)
+                len_k = _fmt_k(context_length)
                 pct = max(0, min(100, round((context_tokens / context_length) * 100)))
-                parts.append(f"{pct}%")
+                parts.append(f"上下文 {ctx_k}/{len_k} ({pct}%)")
+        elif field == "context":
+            if context_length and context_length > 0 and context_tokens >= 0:
+                ctx_k = _fmt_k(context_tokens)
+                len_k = _fmt_k(context_length)
+                parts.append(f"上下文 {ctx_k}/{len_k}")
         elif field == "latency":
             # Wall-clock turn duration. Skipped when the caller supplied no
             # timing (call sites that don't measure) or the value is negative.
@@ -155,18 +195,24 @@ def build_footer_line(
     model: Optional[str],
     context_tokens: int,
     context_length: Optional[int],
+    response_time: Optional[float] = None,
+    output_tokens: Optional[int] = None,
+    input_tokens: Optional[int] = None,
+    cache_read_tokens: Optional[int] = None,
+    cache_write_tokens: Optional[int] = None,
     cwd: Optional[str] = None,
     turn_seconds: Optional[float] = None,
 ) -> str:
-    """Top-level entry point used by gateway/run.py.
+    """Top-level entry point used by gateway/run.py and tui_gateway.
 
     Returns the footer text (empty string when disabled or no data).  Callers
     append this to the final response themselves, preserving a single blank
     line of separation.
 
-    ``turn_seconds`` is the wall-clock duration of the agent run, measured by
-    the caller with ``time.monotonic()``.  Callers that don't measure it leave
-    it ``None`` and the ``latency`` field is skipped.
+    ``turn_seconds`` / ``response_time`` both feed the timing fields — the
+    former drives ``latency`` (compact ``1m05s``), the latter ``response_time``
+    (``耗时 44.9s``).  Callers that don't measure leave them ``None`` and the
+    corresponding fields are skipped.
     """
     cfg = resolve_footer_config(user_config, platform_key)
     if not cfg.get("enabled"):
@@ -175,6 +221,11 @@ def build_footer_line(
         model=model,
         context_tokens=context_tokens,
         context_length=context_length,
+        response_time=response_time,
+        output_tokens=output_tokens,
+        input_tokens=input_tokens,
+        cache_read_tokens=cache_read_tokens,
+        cache_write_tokens=cache_write_tokens,
         cwd=cwd,
         turn_seconds=turn_seconds,
         fields=cfg.get("fields") or _DEFAULT_FIELDS,

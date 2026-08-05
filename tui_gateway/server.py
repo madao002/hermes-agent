@@ -9349,6 +9349,7 @@ def _run_prompt_submit(
     image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
 ) -> None:
+    _turn_start = time.monotonic()
     with session["history_lock"]:
         if (
             queued_prompt_generation is not None
@@ -9837,6 +9838,9 @@ def _run_prompt_submit(
                         model=_u.get("model") or None,
                         context_tokens=_u.get("context_used", 0) or 0,
                         context_length=_u.get("context_max") or None,
+                        response_time=time.monotonic() - _turn_start,
+                        output_tokens=_u.get("output") or None,
+                        input_tokens=_u.get("input") or None,
                         cwd=os.environ.get("TERMINAL_CWD", ""),
                     )
                     if _footer_line:
