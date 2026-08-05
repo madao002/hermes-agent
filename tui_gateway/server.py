@@ -9820,7 +9820,31 @@ def _run_prompt_submit(
                 raw = str(result)
                 status = "complete"
 
-            payload = {"text": raw, "usage": _get_usage(agent), "status": status}
+            # Runtime-metadata footer — mirror gateway/run.py so the desktop
+            # app / TUI surface shows the same runtime footer (model, context
+            # %, cwd) as messaging platforms.  Only on a successful final
+            # reply; skipped for errors/interrupts and empty responses.
+            # Appended to the *displayed* text only — `raw` stays clean for
+            # downstream consumers (auto-title, history persistence).
+            _display_text = raw
+            if raw and status == "complete":
+                try:
+                    from gateway.runtime_footer import build_footer_line as _bfl
+                    _u = _get_usage(agent) if agent is not None else {}
+                    _footer_line = _bfl(
+                        user_config=_load_cfg(),
+                        platform_key="cli",
+                        model=_u.get("model") or None,
+                        context_tokens=_u.get("context_used", 0) or 0,
+                        context_length=_u.get("context_max") or None,
+                        cwd=os.environ.get("TERMINAL_CWD", ""),
+                    )
+                    if _footer_line:
+                        _display_text = f"{_display_text}\n\n{_footer_line}"
+                except Exception as _footer_err:
+                    logger.debug("runtime_footer build failed: %s", _footer_err)
+
+            payload = {"text": _display_text, "usage": _get_usage(agent), "status": status}
             if last_reasoning:
                 payload["reasoning"] = last_reasoning
             if status_note:
