@@ -398,16 +398,111 @@ class HolographicMemoryProvider(MemoryProvider):
             pre = pre.strip()
             return pre or None
 
+        # ── 中文增强：高价值表达按优先级分组 (local-modifications) ────────
+
+        # 6.2 用户强指令（最高优先，匹配即记）
+        _INSTRUCTION_PATTERNS = [
+            re.compile(r'请记住[：:]\s*(.+)'),
+            re.compile(r'请用(.+)回复'),
+            re.compile(r'(?:以后|今后)(?:你|必须)\s*要?\s*(.+)'),
+            re.compile(r'你以后要[：:]?\s*(.+)'),
+            re.compile(r'(?:以后|今后)(?:你|必须)\s*(?:需要|应当|必须)\s*(.+)'),
+            re.compile(r'不要再[：:]\s*(.+)'),
+            re.compile(r'禁止[：:]\s*(.+)'),
+            re.compile(r'必须[：:]\s*(.+)'),
+            re.compile(r'(?:一定|千万)要[：:]\s*(.+)'),
+            re.compile(r'(?:记住|谨记)[：:]\s*(.+)'),
+        ]
+
+        # 6.1 用户长期偏好（含官方英文原生模式）
         _PREF_PATTERNS = [
+            re.compile(r'我喜欢[：:]\s*(.+)'),
+            re.compile(r'我偏好[：:]\s*(.+)'),
+            re.compile(r'我习惯[：:]\s*(.+)'),
+            re.compile(r'我最在意[：:]\s*(.+)'),
+            re.compile(r'对我来说[，,](.+)更重要'),
+            re.compile(r'我通常[会]?\s*(.+)'),
+            re.compile(r'我一般[会]?\s*(.+)'),
+            re.compile(r'我一般不[：:]\s*(.+)'),
             re.compile(r'\bI\s+(?:prefer|like|love|use|want|need)\s+(.+)', re.IGNORECASE),
             re.compile(r'\bmy\s+(?:favorite|preferred|default)\s+\w+\s+is\s+(.+)', re.IGNORECASE),
             re.compile(r'\bI\s+(?:always|never|usually)\s+(.+)', re.IGNORECASE),
         ]
-        _DECISION_PATTERNS = [
+
+        # 6.3 项目/协作约束（含官方英文决策模式）
+        _CONSTRAINT_PATTERNS = [
+            re.compile(r'先定位[，,]?不要修改'),
+            re.compile(r'优先使用[：:]\s*(.+)'),
+            re.compile(r'尽量不要[：:]\s*(.+)'),
+            re.compile(r'不要引入[：:]\s*(.+)'),
+            re.compile(r'不要改动[：:]\s*(.+)'),
+            re.compile(r'本地优先[：:]\s*(.+)'),
+            re.compile(r'速度要快'),
+            re.compile(r'可控[的]?[：:]\s*(.+)'),
+            re.compile(r'稳定性优先'),
+            re.compile(r'先确认再[执行动手]'),
+            re.compile(r'只读[取]?模式'),
+            re.compile(r'不要删除[：:]\s*(.+)'),
+            re.compile(r'不要增加[：:]\s*(.+)'),
+            re.compile(r'以稳为主'),
+            re.compile(r'先不改'),
             re.compile(r'\bwe\s+(?:decided|agreed|chose)\s+(?:to\s+)?(.+)', re.IGNORECASE),
             re.compile(r'\bthe\s+project\s+(?:uses|needs|requires)\s+(.+)', re.IGNORECASE),
         ]
 
+        # 6.4 低价值内容排除
+        _EXCLUDE_PATTERNS = [
+            re.compile(r'^[有无好就按稍等我来看看]啊?$'),
+            re.compile(r'^好的[。.]?$'),
+            re.compile(r'^收到[。.]?$'),
+            re.compile(r'^是的[。.]?$'),
+            re.compile(r'^OK[。,]?$'),
+            re.compile(r'^[稍等等一下]'),
+            re.compile(r'^我来看看'),
+            re.compile(r'^试试'),
+            re.compile(r'^测试[一下]?'),
+            re.compile(r'^不对[，,]?'),
+            re.compile(r'^报错[：:]?\s*(.+)'),
+            re.compile(r'中间试错'),
+            re.compile(r'^重新[来试]?'),
+            re.compile(r'^失败了'),
+            re.compile(r'^还是不行'),
+            re.compile(r'^这样对吗'),
+            re.compile(r'^可以[吗?]?$'),
+            re.compile(r'^行不行'),
+            re.compile(r'^能用吗'),
+            re.compile(r'^[来来来试试]'),
+            re.compile(r'^\\?+$'),
+            re.compile(r'^嗯$'),
+            re.compile(r'^哦$'),
+            re.compile(r'^好$'),
+        ]
+
+        _seen: set = set()
+
+        def _is_excluded(text: str) -> bool:
+            stripped = text.strip()
+            if len(stripped) < 4:
+                return True
+            for p in _EXCLUDE_PATTERNS:
+                if p.match(stripped):
+                    return True
+            if len(stripped) < 8 and not any('\u4e00' <= c <= '\u9fff' for c in stripped):
+                return True
+            return False
+
+        def _add_unique(text: str, category: str) -> bool:
+            key = text[:400].strip()
+            if not key or key in _seen:
+                return False
+            _seen.add(key)
+            try:
+                self._store.add_fact(key, category=category)
+                return True
+            except Exception:
+                return False
+
+        # ── 执行：排除 → 指令(优先) → 偏好 → 约束 ──────────────────────────
         extracted = 0
         for msg in messages:
             if msg.get("role") != "user":
@@ -426,29 +521,44 @@ class HolographicMemoryProvider(MemoryProvider):
                 continue
             else:
                 content = msg.get("content", "")
-            if not isinstance(content, str) or len(content) < 10:
+            if not isinstance(content, str) or len(content) < 4:
                 continue
 
+            if _is_excluded(content):
+                continue
+
+            matched = False
+
+            # ① 强指令（最高优先）
+            for pattern in _INSTRUCTION_PATTERNS:
+                if pattern.search(content):
+                    if _add_unique(content[:400], "user_pref"):
+                        extracted += 1
+                    matched = True
+                    break
+            if matched:
+                continue
+
+            # ② 用户偏好
             for pattern in _PREF_PATTERNS:
                 if pattern.search(content):
-                    try:
-                        self._store.add_fact(content[:400], category="user_pref")
+                    if _add_unique(content[:400], "user_pref"):
                         extracted += 1
-                    except Exception:
-                        pass
+                    matched = True
                     break
+            if matched:
+                continue
 
-            for pattern in _DECISION_PATTERNS:
+            # ③ 项目/协作约束
+            for pattern in _CONSTRAINT_PATTERNS:
                 if pattern.search(content):
-                    try:
-                        self._store.add_fact(content[:400], category="project")
+                    if _add_unique(content[:400], "project"):
                         extracted += 1
-                    except Exception:
-                        pass
+                    matched = True
                     break
 
         if extracted:
-            logger.info("Auto-extracted %d facts from conversation", extracted)
+            logger.info("Auto-extracted %d facts from conversation (cn-enhanced)", extracted)
 
 
 # ---------------------------------------------------------------------------

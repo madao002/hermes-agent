@@ -54,14 +54,30 @@ CREATE TRIGGER IF NOT EXISTS facts_ai AFTER INSERT ON facts BEGIN
 END;
 
 CREATE TRIGGER IF NOT EXISTS facts_ad AFTER DELETE ON facts BEGIN
-    INSERT INTO facts_fts(facts_fts, rowid, content, tags)
-        VALUES ('delete', old.fact_id, old.content, old.tags);
+    DELETE FROM facts_fts WHERE rowid = old.fact_id;
 END;
 
 CREATE TRIGGER IF NOT EXISTS facts_au AFTER UPDATE ON facts BEGIN
-    INSERT INTO facts_fts(facts_fts, rowid, content, tags)
-        VALUES ('delete', old.fact_id, old.content, old.tags);
+    DELETE FROM facts_fts WHERE rowid = old.fact_id;
     INSERT INTO facts_fts(rowid, content, tags)
+        VALUES (new.fact_id, new.content, new.tags);
+END;
+
+CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts_trigram
+    USING fts5(content, tags, tokenize='trigram');
+
+CREATE TRIGGER IF NOT EXISTS facts_fts_trigram_ai AFTER INSERT ON facts BEGIN
+    INSERT INTO facts_fts_trigram(rowid, content, tags)
+        VALUES (new.fact_id, new.content, new.tags);
+END;
+
+CREATE TRIGGER IF NOT EXISTS facts_fts_trigram_ad AFTER DELETE ON facts BEGIN
+    DELETE FROM facts_fts_trigram WHERE rowid = old.fact_id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS facts_fts_trigram_au AFTER UPDATE ON facts BEGIN
+    DELETE FROM facts_fts_trigram WHERE rowid = old.fact_id;
+    INSERT INTO facts_fts_trigram(rowid, content, tags)
         VALUES (new.fact_id, new.content, new.tags);
 END;
 
