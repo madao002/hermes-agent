@@ -4846,6 +4846,8 @@ def _get_usage(agent) -> dict:
         "completion": g("session_completion_tokens"),
         "total": g("session_total_tokens"),
         "calls": g("session_api_calls"),
+        "cache_read": g("session_cache_read_tokens"),
+        "cache_write": g("session_cache_write_tokens"),
     }
     comp = getattr(agent, "context_compressor", None)
     if comp:
@@ -9841,6 +9843,8 @@ def _run_prompt_submit(
                         response_time=time.monotonic() - _turn_start,
                         output_tokens=_u.get("output") or None,
                         input_tokens=_u.get("input") or None,
+                        cache_read_tokens=_u.get("cache_read") or None,
+                        cache_write_tokens=_u.get("cache_write") or None,
                         cwd=os.environ.get("TERMINAL_CWD", ""),
                     )
                     if _footer_line:
