@@ -57,18 +57,10 @@ def _fmt_k(v: float) -> str:
     return str(int(v))
 
 
-def _format_latency(seconds: float) -> str:
-    """Wall-clock duration as ``22s`` / ``1m05s``."""
-    seconds = max(0, int(seconds))
-    if seconds < 60:
-        return f"{seconds}s"
-    return f"{seconds // 60}m{seconds % 60:02d}s"
-
-
 def _home_relative_cwd(cwd: str) -> str:
-    """Collapse the user's home prefix to ``~``; empty input → ``~``."""
+    """Return *cwd* with ``$HOME`` collapsed to ``~``.  Empty string if unset."""
     if not cwd:
-        return "~"
+        return ""
     try:
         home = os.path.expanduser("~")
         p = os.path.abspath(cwd)
@@ -77,6 +69,17 @@ def _home_relative_cwd(cwd: str) -> str:
         return p
     except Exception:
         return cwd
+
+
+def _format_latency(seconds: float) -> str:
+    """Humanize a turn duration: ``<1s``, ``22s``, ``1m05s``."""
+    if seconds < 1:
+        return "<1s"
+    total = int(round(seconds))
+    if total < 60:
+        return f"{total}s"
+    m, sec = divmod(total, 60)
+    return f"{m}m{sec:02d}s"
 
 
 def resolve_footer_config(
