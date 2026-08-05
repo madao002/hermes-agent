@@ -151,16 +151,13 @@ def format_runtime_footer(
             if in_k and in_k != "?":
                 parts.append(f"↓ {in_k}")
         elif field == "cache_io":
-            cr_k = _fmt_k(cache_read_tokens) if cache_read_tokens else None
-            cw_k = _fmt_k(cache_write_tokens) if cache_write_tokens else None
-            cache_parts = []
-            if cr_k and cr_k != "?":
-                cache_parts.append(cr_k)
-            if cw_k and cw_k != "?":
-                cache_parts.append(cw_k)
-            if cache_parts:
-                cache_str = "/".join(cache_parts)
-                parts.append(f"缓存 {cache_str}")
+            # Cache-hit utilization as a percent: cache_read / total prompt
+            # (total = fresh input + cache read + cache write, mirroring
+            # DeepSeek's prompt_tokens = hit + miss).
+            _denom = (input_tokens or 0) + (cache_read_tokens or 0) + (cache_write_tokens or 0)
+            if cache_read_tokens and _denom > 0:
+                _cache_pct = max(0, min(100, round((cache_read_tokens / _denom) * 100)))
+                parts.append(f"缓存 {_cache_pct}%")
         elif field == "context_pct":
             if context_length and context_length > 0 and context_tokens >= 0:
                 ctx_k = _fmt_k(context_tokens)
