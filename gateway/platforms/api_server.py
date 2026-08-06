@@ -3530,6 +3530,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 context_tokens=result.get("last_prompt_tokens", 0) or 0,
                 context_length=result.get("context_length") or None,
                 cwd=os.environ.get("TERMINAL_CWD", ""),
+                cache_read_tokens=result.get("cache_read_tokens") or None,
+                cache_write_tokens=result.get("cache_write_tokens") or None,
             )
         except Exception as _footer_err:
             logger.debug("runtime_footer build failed: %s", _footer_err)
