@@ -5349,7 +5349,12 @@ class TurnRunner:
         _agent = ctx.agent_holder[0]
         if _agent and hasattr(_agent, "context_compressor"):
             _last_prompt_toks = getattr(_agent.context_compressor, "last_prompt_tokens", 0)
-            _input_toks = getattr(_agent, "session_prompt_tokens", 0)
+            # Fresh (non-cached) input, matching tui_gateway._get_usage's
+            # session_input_tokens semantics. session_prompt_tokens includes
+            # cache hits (prompt_tokens = hit + miss on DeepSeek), so using it
+            # would double-count cache_read in the footer's utilization
+            # denominator and understate the hit rate.
+            _input_toks = getattr(_agent, "session_input_tokens", 0) or getattr(_agent, "session_prompt_tokens", 0)
             _output_toks = getattr(_agent, "session_completion_tokens", 0)
             _cache_read_toks = getattr(_agent, "session_cache_read_tokens", 0)
             _cache_write_toks = getattr(_agent, "session_cache_write_tokens", 0)
