@@ -28,8 +28,14 @@ This is a merged build: it keeps the upstream v0.20.0 signature
 fields (``status`` / ``response_time`` / ``io_tokens`` / ``context_pct``)
 used by the local Feishu card footer, so all surfaces render the same rich
 footer line.
-"""
+    served_model  — alias → served（上游新增：路由代理上报的实际模型）
 
+This is a merged build: it keeps the upstream v0.20.0 signature
+``cwd`` / ``turn_seconds`` for gateway/run.py callers AND the enhanced
+fields (``status`` / ``response_time`` / ``io_tokens`` / ``context_pct``)
+used by the local Feishu card footer, so all surfaces render the same rich
+footer line.
+"""
 from __future__ import annotations
 
 import os
@@ -82,6 +88,14 @@ def _format_latency(seconds: float) -> str:
     return f"{m}m{sec:02d}s"
 
 
+def _env_cwd() -> str:
+    try:
+        from tools.terminal_scope import terminal_env
+    except ImportError:
+        return os.environ.get("TERMINAL_CWD", "")
+    return terminal_env("TERMINAL_CWD", "")
+
+
 def resolve_footer_config(
     user_config: dict[str, Any] | None,
     platform_key: str | None = None,
@@ -129,6 +143,8 @@ def format_runtime_footer(
     cache_write_tokens: Optional[int] = None,
     cwd: Optional[str] = None,
     turn_seconds: Optional[float] = None,
+    requested_model: Optional[str] = None,
+    served_model: Optional[str] = None,
     fields: Iterable[str] = _DEFAULT_FIELDS,
 ) -> str:
     """Render the footer line, or return "" if no fields have data.
@@ -143,9 +159,12 @@ def format_runtime_footer(
             if response_time is not None:
                 parts.append(f"耗时 {response_time:.1f}s")
         elif field == "model":
-            m = _model_short(model)
-            if m:
-                parts.append(m)
+            _req = requested_model or model
+            _alias = _model_short(_req)
+            if served_model and served_model not in (_alias, _req):
+                _alias = f"{_alias} → {served_model}"
+            if _alias:
+                parts.append(_alias)
         elif field == "io_tokens":
             out_k = _fmt_k(output_tokens) if output_tokens else None
             in_k = _fmt_k(input_tokens) if input_tokens else None
@@ -178,13 +197,7 @@ def format_runtime_footer(
             if turn_seconds is not None and turn_seconds >= 0:
                 parts.append(_format_latency(turn_seconds))
         elif field == "cwd":
-            try:
-                from tools.terminal_scope import terminal_env as _tenv
-            except ImportError:
-                env_cwd = os.environ.get("TERMINAL_CWD", "")
-            else:
-                env_cwd = _tenv("TERMINAL_CWD", "")
-            rel = _home_relative_cwd(cwd or env_cwd)
+            rel = _home_relative_cwd(cwd or _env_cwd())
             if rel:
                 parts.append(rel)
         # Unknown field names are silently ignored.
@@ -234,5 +247,55 @@ def build_footer_line(
         cache_write_tokens=cache_write_tokens,
         cwd=cwd,
         turn_seconds=turn_seconds,
+        fields=cfg.get("fields") or _DEFAULT_FIELDS,
+    )
+
+
+def build_footer_line(
+    *,
+    user_config: dict[str, Any] | None,
+    platform_key: str | None,
+    model: Optional[str],
+    context_tokens: int,
+    context_length: Optional[int],
+    response_time: Optional[float] = None,
+    output_tokens: Optional[int] = None,
+    input_tokens: Optional[int] = None,
+    cache_read_tokens: Optional[int] = None,
+    cache_write_tokens: Optional[int] = None,
+    cwd: Optional[str] = None,
+    turn_seconds: Optional[float] = None,
+    requested_model: Optional[str] = None,
+    served_model: Optional[str] = None,
+) -> str:
+    """Top-level entry point used by gateway/run.py and tui_gateway.
+
+    Returns the footer text (empty string when disabled or no data).  Callers
+    append this to the final response themselves, preserving a single blank
+    line of separation.
+
+    ``turn_seconds`` / ``response_time`` both feed the timing fields — the
+    former drives ``latency`` (compact ``1m05s``), the latter ``response_time``
+    (``耗时 44.9s``).  Callers that don't measure leave them ``None`` and the
+    corresponding fields are skipped.  ``served_model`` (upstream): when a
+    routing proxy reported a different deployment, the ``model`` field renders
+    ``alias → served``.
+    """
+    cfg = resolve_footer_config(user_config, platform_key)
+    if not cfg.get("enabled"):
+        return ""
+    return format_runtime_footer(
+        model=model,
+        context_tokens=context_tokens,
+        context_length=context_length,
+        response_time=response_time,
+        output_tokens=output_tokens,
+        input_tokens=input_tokens,
+        cache_read_tokens=cache_read_tokens,
+        cache_write_tokens=cache_write_tokens,
+        cwd=cwd,
+        turn_seconds=turn_seconds,
+        requested_model=requested_model,
+        served_model=served_model,
         fields=cfg.get("fields") or _DEFAULT_FIELDS,
     )
