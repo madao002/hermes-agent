@@ -166,9 +166,7 @@ except Exception as e:
     logger.debug("Plugin discovery failed: %s", e)
 
 
-# Backward-compat constants (built once after discovery)
-TOOL_TO_TOOLSET_MAP: dict[str, str] = registry.get_tool_to_toolset_map()
-
+# Backward-compat constant (built once after discovery)
 TOOLSET_REQUIREMENTS: dict[str, dict] = registry.get_toolset_requirements()
 
 # Tool names from the last get_tool_definitions() call (execute_code sandbox fallback).
@@ -413,6 +411,17 @@ def _rewrite_browser_exec_vision(td: dict[str, Any], available: set) -> Optional
     return _fn_def({**fn, "description": desc.replace(SCREENSHOTS_DETACHED, SCREENSHOTS_DETACHED + hint, 1)})
 
 
+def _rewrite_terminal(td: dict[str, Any], available: set) -> Optional[dict[str, Any]]:
+    """Steer file work to the file tools only when the session has all of them, and name
+    execute_code only when it is present (a terminal-only session keeps the shell as its file route)."""
+    from tools.terminal_tool import TERMINAL_EXECUTE_CODE_HINT, TERMINAL_FILE_TOOL_NAMES, TERMINAL_FILE_TOOLS_HINT
+    if not TERMINAL_FILE_TOOL_NAMES <= available:
+        return td
+    hint = TERMINAL_FILE_TOOLS_HINT + (TERMINAL_EXECUTE_CODE_HINT if "execute_code" in available else "") + "."
+    fn = td["function"]
+    return _fn_def({**fn, "description": fn.get("description", "") + hint})
+
+
 def _rewrite_delegate_task(td: dict[str, Any], available: set) -> Optional[dict[str, Any]]:
     """Trim the child-restrictions line to sibling tools actually present, or drop
     the line when none apply, so the model never learns ghost vocabulary. Two
@@ -495,6 +504,7 @@ _DYNAMIC_SCHEMA_REWRITERS = {
     "browser_vault": _rewrite_browser_vault,
     "drive_preview": _rewrite_input_tool_for_vault,
     "delegate_task": _rewrite_delegate_task,
+    "terminal": _rewrite_terminal,
 }
 
 
@@ -1005,10 +1015,11 @@ def handle_function_call(
         return _apply_transform_tool_result_hook(function_name, function_args, result, duration_ms, ids)
 
     except Exception as e:
+        from storage_user_copy import error_type_name
         error_msg = f"Error executing {function_name}: {e!s}"
         logger.exception(error_msg)
         return _emit(tool_error(_sanitize_tool_error(error_msg)), duration_ms=_elapsed_ms(start),
-                     status="error", error_type=type(e).__name__, error_message=str(e))
+                     status="error", error_type=error_type_name(e), error_message=str(e))
 
 
 # =============================================================================

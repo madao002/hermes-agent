@@ -65,6 +65,9 @@ class MessagingPlatformUpdate(BaseModel):
     # Explicit body profile beats the switcher's query param (same as other scoped writes).
     profile: Optional[str] = None
 
+class MessagingCatalogInstall(BaseModel):
+    profile: Optional[str] = None
+
 class TelegramOnboardingStart(BaseModel):
     bot_name: Optional[str] = None
 
@@ -260,9 +263,9 @@ class TTSLeaseRequest(BaseModel):
     active: bool = True
 
 class STTLeaseRequest(BaseModel):
-    """POST /api/audio/stt-lease: ``lease`` names the voice-input session holding the lease
-    (``desktop:voice-input:<renderer>``); ``active`` True acquires + pre-loads the local
-    STT model, False releases. Unlike TTS, release never unloads (shared engine)."""
+    """POST /api/audio/stt-lease: ``lease`` names the voice-input session
+    (``desktop:voice-input:<renderer>``); ``active`` True pre-loads the local STT model,
+    False is a no-op. Unlike TTS, nothing unloads (shared engine)."""
     lease: str
     active: bool = True
 
@@ -434,6 +437,8 @@ class ImportRequest(BaseModel):
     # --force: the spawned `hermes import` has stdin=DEVNULL, so its "Continue? [y/N]" prompt would
     # hit EOF and abort; the dashboard confirms in its own modal.
     force: bool = False
+    # --keep-host: replace the agent but keep what its host provisioned (Hermes Cloud transfer/undo).
+    keep_host: bool = False
 
 class HookCreate(BaseModel):
     event: str
